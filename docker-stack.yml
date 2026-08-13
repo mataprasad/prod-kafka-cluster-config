@@ -1,25 +1,49 @@
 version: "3.8"
 
-# Deploy with:
+# 3 Kafka brokers + 3 dedicated KRaft controllers.
+# Security:
+#   - TLS encryption on CLIENT, INTERNAL, and CONTROLLER listeners
+#   - SCRAM-SHA-512 for client and inter-broker SASL
+#   - PLAIN for KRaft controller SASL over TLS
+#   - Kafka StandardAuthorizer ACLs
+#   - Passwords and TLS material mounted as Docker Secrets
+#
+# Required node labels:
 #   docker node update --label-add kafka.node=1 <node-1>
 #   docker node update --label-add kafka.node=2 <node-2>
 #   docker node update --label-add kafka.node=3 <node-3>
+#
+# Required env at deploy time:
 #   export KAFKA_CLUSTER_ID="$(docker run --rm bitnami/kafka:3.7 kafka-storage.sh random-uuid)"
 #   export KAFKA_1_ADVERTISED_HOST="<node-1-dns-or-ip>"
 #   export KAFKA_2_ADVERTISED_HOST="<node-2-dns-or-ip>"
 #   export KAFKA_3_ADVERTISED_HOST="<node-3-dns-or-ip>"
-#   export KAFKA_CLIENT_USER="admin"
-#   export KAFKA_CLIENT_PASSWORD="<strong-client-password>"
-#   export KAFKA_INTER_BROKER_USER="broker"
-#   export KAFKA_INTER_BROKER_PASSWORD="<strong-inter-broker-password>"
-#   export KAFKA_CONTROLLER_USER="controller"
-#   export KAFKA_CONTROLLER_PASSWORD="<strong-controller-password>"
+#
+# Required password secrets:
+#   printf '%s' '<admin-password>' | docker secret create kafka_client_password -
+#   printf '%s' '<broker-password>' | docker secret create kafka_inter_broker_password -
+#   printf '%s' '<controller-password>' | docker secret create kafka_controller_password -
+#   printf '%s' '<cert-password>' | docker secret create kafka_certificate_password -
+#
+# Generate TLS files:
+#   KAFKA_1_HOST=<node-1-dns-or-ip> KAFKA_2_HOST=<node-2-dns-or-ip> KAFKA_3_HOST=<node-3-dns-or-ip> CERT_PASSWORD=<cert-password> ./scripts/generate-kafka-certs.sh
+#
+# Create TLS secrets from generated files:
+#   ./scripts/create-kafka-tls-secrets.sh
+#
+# Deploy:
 #   docker stack deploy -c docker-stack.yml kafka
 #
-# Client connection properties:
-#   security.protocol=SASL_PLAINTEXT
-#   sasl.mechanism=PLAIN
-#   sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="<strong-client-password>";
+# Client properties:
+#   security.protocol=SASL_SSL
+#   sasl.mechanism=SCRAM-SHA-512
+#   ssl.truststore.type=PEM
+#   ssl.truststore.location=/path/to/ca.truststore.pem
+#   sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="<admin-password>";
+
+configs:
+  kafka_entrypoint_with_secrets:
+    file: ./scripts/kafka-entrypoint-with-secrets.sh
 
 networks:
   kafka:
@@ -27,40 +51,124 @@ networks:
     attachable: true
 
 volumes:
-  kafka_1_data:
-  kafka_2_data:
-  kafka_3_data:
+  broker_1_data:
+  broker_2_data:
+  broker_3_data:
+  controller_1_data:
+  controller_2_data:
+  controller_3_data:
 
-x-kafka-env: &kafka-env
+secrets:
+  kafka_client_password:
+    external: true
+  kafka_inter_broker_password:
+    external: true
+  kafka_controller_password:
+    external: true
+  kafka_certificate_password:
+    external: true
+  broker_1_keystore_pem:
+    external: true
+  broker_1_keystore_key:
+    external: true
+  broker_1_truststore_pem:
+    external: true
+  broker_2_keystore_pem:
+    external: true
+  broker_2_keystore_key:
+    external: true
+  broker_2_truststore_pem:
+    external: true
+  broker_3_keystore_pem:
+    external: true
+  broker_3_keystore_key:
+    external: true
+  broker_3_truststore_pem:
+    external: true
+  controller_1_keystore_pem:
+    external: true
+  controller_1_keystore_key:
+    external: true
+  controller_1_truststore_pem:
+    external: true
+  controller_2_keystore_pem:
+    external: true
+  controller_2_keystore_key:
+    external: true
+  controller_2_truststore_pem:
+    external: true
+  controller_3_keystore_pem:
+    external: true
+  controller_3_keystore_key:
+    external: true
+  controller_3_truststore_pem:
+    external: true
+
+x-secret-client-password: &secret-client-password
+  source: kafka_client_password
+  target: kafka_client_password
+  uid: "1001"
+  gid: "1001"
+  mode: 0440
+
+x-secret-inter-broker-password: &secret-inter-broker-password
+  source: kafka_inter_broker_password
+  target: kafka_inter_broker_password
+  uid: "1001"
+  gid: "1001"
+  mode: 0440
+
+x-secret-controller-password: &secret-controller-password
+  source: kafka_controller_password
+  target: kafka_controller_password
+  uid: "1001"
+  gid: "1001"
+  mode: 0440
+
+x-secret-certificate-password: &secret-certificate-password
+  source: kafka_certificate_password
+  target: kafka_certificate_password
+  uid: "1001"
+  gid: "1001"
+  mode: 0440
+
+x-common-env: &common-env
   KAFKA_ENABLE_KRAFT: "yes"
   KAFKA_KRAFT_CLUSTER_ID: "${KAFKA_CLUSTER_ID:?KAFKA_CLUSTER_ID is required}"
-  KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+  KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "101@controller-1:9093,102@controller-2:9093,103@controller-3:9093"
   KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-  KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093"
-  KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:SASL_PLAINTEXT,CLIENT:SASL_PLAINTEXT,CONTROLLER:SASL_PLAINTEXT"
-  KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "INTERNAL"
-  KAFKA_CFG_SASL_ENABLED_MECHANISMS: "PLAIN"
-  KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: "PLAIN"
+  KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CLIENT:SASL_SSL,INTERNAL:SASL_SSL,CONTROLLER:SASL_SSL"
+  KAFKA_CFG_SASL_ENABLED_MECHANISMS: "SCRAM-SHA-512,PLAIN"
+  KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: "SCRAM-SHA-512"
   KAFKA_CFG_SASL_MECHANISM_CONTROLLER_PROTOCOL: "PLAIN"
-  KAFKA_CLIENT_USERS: "${KAFKA_CLIENT_USER:-admin}"
-  KAFKA_CLIENT_PASSWORDS: "${KAFKA_CLIENT_PASSWORD:?KAFKA_CLIENT_PASSWORD is required}"
-  KAFKA_INTER_BROKER_USER: "${KAFKA_INTER_BROKER_USER:-broker}"
-  KAFKA_INTER_BROKER_PASSWORD: "${KAFKA_INTER_BROKER_PASSWORD:?KAFKA_INTER_BROKER_PASSWORD is required}"
-  KAFKA_CONTROLLER_USER: "${KAFKA_CONTROLLER_USER:-controller}"
-  KAFKA_CONTROLLER_PASSWORD: "${KAFKA_CONTROLLER_PASSWORD:?KAFKA_CONTROLLER_PASSWORD is required}"
+  KAFKA_CLIENT_USERS: "admin"
+  KAFKA_INTER_BROKER_USER: "broker"
+  KAFKA_CONTROLLER_USER: "controller"
+  KAFKA_TLS_TYPE: "PEM"
+  KAFKA_TLS_CLIENT_AUTH: "none"
+  KAFKA_TLS_CONTROLLER_CLIENT_AUTH: "none"
   KAFKA_CFG_AUTHORIZER_CLASS_NAME: "org.apache.kafka.metadata.authorizer.StandardAuthorizer"
-  KAFKA_CFG_SUPER_USERS: "User:${KAFKA_CLIENT_USER:-admin};User:${KAFKA_INTER_BROKER_USER:-broker};User:${KAFKA_CONTROLLER_USER:-controller}"
+  KAFKA_CFG_SUPER_USERS: "User:admin;User:broker;User:controller"
   KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
   KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+x-broker-env: &broker-env
+  <<: *common-env
+  KAFKA_CFG_PROCESS_ROLES: "broker"
+  KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+  KAFKA_CLIENT_LISTENER_NAME: "CLIENT"
   KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
   KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
   KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "2"
   KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "3"
   KAFKA_CFG_MIN_INSYNC_REPLICAS: "2"
   KAFKA_CFG_NUM_PARTITIONS: "3"
-  ALLOW_PLAINTEXT_LISTENER: "yes"
 
-x-kafka-deploy: &kafka-deploy
+x-controller-env: &controller-env
+  <<: *common-env
+  KAFKA_CFG_PROCESS_ROLES: "controller"
+
+x-common-deploy: &common-deploy
   replicas: 1
   restart_policy:
     condition: on-failure
@@ -70,75 +178,247 @@ x-kafka-deploy: &kafka-deploy
     order: stop-first
     parallelism: 1
 
-x-kafka-common: &kafka-common
+x-common-service: &common-service
   image: bitnami/kafka:3.7
+  entrypoint:
+    - /bin/bash
+    - /opt/bitnami/kafka/config/entrypoint-with-secrets.sh
+  configs:
+    - source: kafka_entrypoint_with_secrets
+      target: /opt/bitnami/kafka/config/entrypoint-with-secrets.sh
+      uid: "1001"
+      gid: "1001"
+      mode: 0440
   networks:
     - kafka
-  environment:
-    <<: *kafka-env
   deploy:
-    <<: *kafka-deploy
+    <<: *common-deploy
 
 services:
-  kafka-1:
-    <<: *kafka-common
-    hostname: kafka-1
-    volumes:
-      - kafka_1_data:/bitnami/kafka
-    ports:
-      - target: 9092
-        published: 9092
-        protocol: tcp
-        mode: host
+  controller-1:
+    <<: *common-service
+    hostname: controller-1
     environment:
-      <<: *kafka-env
-      KAFKA_CFG_NODE_ID: "1"
-      KAFKA_CFG_LISTENERS: "INTERNAL://:9094,CLIENT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://kafka-1:9094,CLIENT://${KAFKA_1_ADVERTISED_HOST:?KAFKA_1_ADVERTISED_HOST is required}:9092"
+      <<: *controller-env
+      KAFKA_CFG_NODE_ID: "101"
+      KAFKA_CFG_LISTENERS: "CONTROLLER://:9093"
+    volumes:
+      - controller_1_data:/bitnami/kafka
+    secrets:
+      - *secret-client-password
+      - *secret-inter-broker-password
+      - *secret-controller-password
+      - *secret-certificate-password
+      - source: controller_1_keystore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: controller_1_keystore_key
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.key
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: controller_1_truststore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.truststore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
     deploy:
-      <<: *kafka-deploy
+      <<: *common-deploy
       placement:
         constraints:
           - node.labels.kafka.node == 1
 
-  kafka-2:
-    <<: *kafka-common
-    hostname: kafka-2
-    volumes:
-      - kafka_2_data:/bitnami/kafka
-    ports:
-      - target: 9092
-        published: 9092
-        protocol: tcp
-        mode: host
+  controller-2:
+    <<: *common-service
+    hostname: controller-2
     environment:
-      <<: *kafka-env
-      KAFKA_CFG_NODE_ID: "2"
-      KAFKA_CFG_LISTENERS: "INTERNAL://:9094,CLIENT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://kafka-2:9094,CLIENT://${KAFKA_2_ADVERTISED_HOST:?KAFKA_2_ADVERTISED_HOST is required}:9092"
+      <<: *controller-env
+      KAFKA_CFG_NODE_ID: "102"
+      KAFKA_CFG_LISTENERS: "CONTROLLER://:9093"
+    volumes:
+      - controller_2_data:/bitnami/kafka
+    secrets:
+      - *secret-client-password
+      - *secret-inter-broker-password
+      - *secret-controller-password
+      - *secret-certificate-password
+      - source: controller_2_keystore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: controller_2_keystore_key
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.key
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: controller_2_truststore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.truststore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
     deploy:
-      <<: *kafka-deploy
+      <<: *common-deploy
       placement:
         constraints:
           - node.labels.kafka.node == 2
 
-  kafka-3:
-    <<: *kafka-common
-    hostname: kafka-3
+  controller-3:
+    <<: *common-service
+    hostname: controller-3
+    environment:
+      <<: *controller-env
+      KAFKA_CFG_NODE_ID: "103"
+      KAFKA_CFG_LISTENERS: "CONTROLLER://:9093"
     volumes:
-      - kafka_3_data:/bitnami/kafka
+      - controller_3_data:/bitnami/kafka
+    secrets:
+      - *secret-client-password
+      - *secret-inter-broker-password
+      - *secret-controller-password
+      - *secret-certificate-password
+      - source: controller_3_keystore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: controller_3_keystore_key
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.key
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: controller_3_truststore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.truststore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+    deploy:
+      <<: *common-deploy
+      placement:
+        constraints:
+          - node.labels.kafka.node == 3
+
+  broker-1:
+    <<: *common-service
+    hostname: broker-1
+    environment:
+      <<: *broker-env
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_LISTENERS: "INTERNAL://:9094,CLIENT://:9092"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://broker-1:9094,CLIENT://${KAFKA_1_ADVERTISED_HOST:?KAFKA_1_ADVERTISED_HOST is required}:9092"
+    volumes:
+      - broker_1_data:/bitnami/kafka
+    secrets:
+      - *secret-client-password
+      - *secret-inter-broker-password
+      - *secret-controller-password
+      - *secret-certificate-password
+      - source: broker_1_keystore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: broker_1_keystore_key
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.key
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: broker_1_truststore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.truststore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
     ports:
       - target: 9092
         published: 9092
         protocol: tcp
         mode: host
-    environment:
-      <<: *kafka-env
-      KAFKA_CFG_NODE_ID: "3"
-      KAFKA_CFG_LISTENERS: "INTERNAL://:9094,CLIENT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://kafka-3:9094,CLIENT://${KAFKA_3_ADVERTISED_HOST:?KAFKA_3_ADVERTISED_HOST is required}:9092"
     deploy:
-      <<: *kafka-deploy
+      <<: *common-deploy
+      placement:
+        constraints:
+          - node.labels.kafka.node == 1
+
+  broker-2:
+    <<: *common-service
+    hostname: broker-2
+    environment:
+      <<: *broker-env
+      KAFKA_CFG_NODE_ID: "2"
+      KAFKA_CFG_LISTENERS: "INTERNAL://:9094,CLIENT://:9092"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://broker-2:9094,CLIENT://${KAFKA_2_ADVERTISED_HOST:?KAFKA_2_ADVERTISED_HOST is required}:9092"
+    volumes:
+      - broker_2_data:/bitnami/kafka
+    secrets:
+      - *secret-client-password
+      - *secret-inter-broker-password
+      - *secret-controller-password
+      - *secret-certificate-password
+      - source: broker_2_keystore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: broker_2_keystore_key
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.key
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: broker_2_truststore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.truststore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+    ports:
+      - target: 9092
+        published: 9092
+        protocol: tcp
+        mode: host
+    deploy:
+      <<: *common-deploy
+      placement:
+        constraints:
+          - node.labels.kafka.node == 2
+
+  broker-3:
+    <<: *common-service
+    hostname: broker-3
+    environment:
+      <<: *broker-env
+      KAFKA_CFG_NODE_ID: "3"
+      KAFKA_CFG_LISTENERS: "INTERNAL://:9094,CLIENT://:9092"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://broker-3:9094,CLIENT://${KAFKA_3_ADVERTISED_HOST:?KAFKA_3_ADVERTISED_HOST is required}:9092"
+    volumes:
+      - broker_3_data:/bitnami/kafka
+    secrets:
+      - *secret-client-password
+      - *secret-inter-broker-password
+      - *secret-controller-password
+      - *secret-certificate-password
+      - source: broker_3_keystore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: broker_3_keystore_key
+        target: /opt/bitnami/kafka/config/certs/kafka.keystore.key
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+      - source: broker_3_truststore_pem
+        target: /opt/bitnami/kafka/config/certs/kafka.truststore.pem
+        uid: "1001"
+        gid: "1001"
+        mode: 0440
+    ports:
+      - target: 9092
+        published: 9092
+        protocol: tcp
+        mode: host
+    deploy:
+      <<: *common-deploy
       placement:
         constraints:
           - node.labels.kafka.node == 3
