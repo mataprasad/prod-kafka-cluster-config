@@ -14,7 +14,7 @@ version: "3.8"
 #   docker node update --label-add kafka.node=3 <node-3>
 #
 # Required env at deploy time:
-#   export KAFKA_CLUSTER_ID="$(docker run --rm bitnami/kafka:3.7 kafka-storage.sh random-uuid)"
+#   export KAFKA_CLUSTER_ID="$(docker run --rm bitnamilegacy/kafka:3.7.1-debian-12-r4 kafka-storage.sh random-uuid)"
 #   export KAFKA_1_ADVERTISED_HOST="<node-1-dns-or-ip>"
 #   export KAFKA_2_ADVERTISED_HOST="<node-2-dns-or-ip>"
 #   export KAFKA_3_ADVERTISED_HOST="<node-3-dns-or-ip>"
@@ -179,7 +179,7 @@ x-common-deploy: &common-deploy
     parallelism: 1
 
 x-common-service: &common-service
-  image: bitnami/kafka:3.7
+  image: bitnamilegacy/kafka:3.7.1-debian-12-r4
   entrypoint:
     - /bin/bash
     - /opt/bitnami/kafka/config/entrypoint-with-secrets.sh
